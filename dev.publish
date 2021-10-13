@@ -1,0 +1,23 @@
+#!/bin/bash
+
+if [ "$devtoapi" == "" ]; then
+	echo devtoapi is empty
+	exit -1
+fi
+
+# for better readability
+title=$1
+tags=$3
+# the content has to be json encoded 
+skips=$(cat blog-posts/name-of-your-blog-post/name-of-your-blog-post.md | grep -n "^\-\-\-$" | head -2 | tail -1 | cut -d: -f1)
+content=$(cat "$2" | jq '.' --raw-input --slurp)
+
+# write it to a tmp file for better debugging and also for using a file path in the curl call
+tee /tmp/devtoArticle.md << END
+{"article":{"title":"$title","body_markdown":$content,"published":false,"tags":[$tags]}}
+END
+
+curl -X POST -H "Content-Type: application/json" \
+    -H "api-key: ${devtoApiToken}" \
+    -d @/tmp/devtoArticle.md \
+    https://dev.to/api/articles
