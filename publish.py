@@ -176,11 +176,11 @@ def commit_post(post: Post, blog_api: BlogApi):
 
     blog_status = post_status[blog_api.blog]
     if blog_status.post_id is None:
-        logger.info(f'post have no id, make posted...')
+        logger.info(f"post have no id, make posted...")
         blog_status.post_id = str(blog_api.make_posted(post))
         update_post_status(post, post_status)
     else:
-        logger.info(f'post have id, update post...')
+        logger.info(f"post have id, update post...")
         blog_api.update_post(post, blog_status.post_id)
 
 
@@ -193,9 +193,11 @@ def commit_all():
     """
     Check everything is commit needed
     """
-    if (diff := repo.git.diff()) != '':
-        logger.error(f'> git diff\n{diff}')
-        assert diff == '', 'all tracked files should be commit before running this script'
+    if (diff := repo.git.diff()) != "":
+        logger.error(f"> git diff\n{diff}")
+        assert (
+            diff == ""
+        ), "all tracked files should be commit before running this script"
     for post in all_modified_posts():
         if not os.path.exists(post):
             raise FileNotFoundError(post)
@@ -204,15 +206,15 @@ def commit_all():
         for blog_api in API_MAP.values():
             commit_post(post, blog_api)
 
-    diff = repo.git.diff('status.yml')
-    logger.info(f'> git diff status.yml\n{diff}')
-    if diff != '':
-        logger.info('auto-commit')
-        repo.git.add('status.yml')
-        repo.git.commit('-m', 'auto-commit: modify status.yml')
+    diff = repo.git.diff("status.yml")
+    logger.info(f"> git diff status.yml\n{diff}")
+    if diff != "":
+        logger.info("auto-commit")
+        repo.git.add("status.yml")
+        repo.git.commit("-m", "auto-commit: modify status.yml")
     else:
-        logger.info('nothing to do')
+        logger.info("nothing to do")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     commit_all()
