@@ -5,7 +5,7 @@ import os
 from collections import defaultdict
 from enum import Enum
 from getpass import getpass
-from typing import Generator, NewType, Optional
+from typing import Generator, NewType, Optional, Tuple, Union
 
 import git
 import requests
@@ -34,20 +34,48 @@ class BlogStatus(BaseModel):
     post_id: Optional[str]
 
 
+class PostSetting(BaseModel):
+    title: str
+    draft: bool
+    main_image: Optional[str]
+    description: Optional[str]
+    tags: Optional[list[str]]
+    canonical_url: Optional[str]
+
+    devto_series: Optional[str]
+
+
 Post = NewType("Post", str)
+ContentPath = NewType("Content", str)
+SettingPath = NewType("Setting", str)
 PostStatus = dict[Blog, BlogStatus]
 Status = dict[Post, PostStatus]
+
+
+def get_post(post_or_setting: Union[ContentPath, SettingPath]) -> Post:
+    return Post(post_or_setting.rpartition(".")[0])
+
+
+def get_setting(post: Post) -> SettingPath:
+    return SettingPath(f"{post}.json")
+
+
+def get_content(post: Post) -> ContentPath:
+    return ContentPath(f"{post}.md")
 
 
 class BlogApi(abc.ABC):
     blog: Blog = NotImplemented
 
-    @abc.abstractmethod
-    def is_published(self, post_id) -> bool:
-        return NotImplemented
+    def read_post_content_and_setting(self, post: Post) -> Tuple[str, PostSetting]:
+        with open(get_setting(post), "r", encoding="utf-8") as f:
+            post_setting = PostSetting(**json.load(f))
+        with open(get_content(post), "r", encoding="utf-8") as f:
+            post_content = f.read()
+        return post_content, post_setting
 
     @abc.abstractmethod
-    def make_posted(self, post: Post) -> int:
+    def make_posted(self, post: Post) -> str:
         """Make post posted
 
         :return post id
@@ -55,8 +83,76 @@ class BlogApi(abc.ABC):
         return NotImplemented
 
     @abc.abstractmethod
-    def update_post(self, post: Post, post_id) -> None:
+    def update_post(self, post: Post, post_id) -> Optional[str]:
         raise NotImplementedError
+
+
+class Medium(BlogApi):
+    blog: Blog = Blog.medium
+
+    def __init__(self):
+        self.author_id = (
+            "1e3ed26bddc2dfac677424f1c22ef26ea0195ccf23ab80c77a310921643454c8a"
+        )
+        self.apikey = os.environ.get("MEDIUM_KEY", None)
+        if self.apikey is None:
+            self.apikey = getpass("medium key:")
+
+    @staticmethod
+    def build_payload(post_content: str, post_setting: PostSetting) -> dict:
+        payload = {"content": post_content, "contentFormat": "markdown"}
+        if post_setting.title is not None:
+            payload["title"] = post_setting.title
+        if post_setting.draft is not None:
+            payload["publishStatus"] = "draft" if post_setting.draft else "public"
+        if post_setting.tags is not None:
+            payload["tags"] = post_setting.tags
+        if post_setting.main_image is not None:
+            payload["canonicalUrl"] = post_setting.canonical_url
+        return payload
+
+    def make_posted(self, post: Post) -> str:
+        post_content, post_setting = self.read_post_content_and_setting(post)
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.apikey}",
+        }
+        url = f"https://api.medium.com/v1/users/{self.author_id}/posts"
+        payload = self.build_payload(post_content, post_setting)
+        logger.info(f"request.post({url})")
+        req = requests.post(url, headers=headers, data=json.dumps(payload))
+        logger.info(f"got status_code={req.status_code}")
+        if req.status_code != 201:
+            raise requests.HTTPError(req)
+        post_id = req.json()["data"]["id"]
+        logger.info(f"got id={post_id}")
+        return post_id
+
+    def update_post(self, post: Post, post_id) -> Optional[str]:
+        logger.warning("Medium does not support update post using API.")
+        logger.warning(
+            f"Go to `https://medium.com/p/{post_id}/settings` and delete it. "
+            f"This system will create a new one. "
+            f"Or you can edit it in a browser manually."
+        )
+        while True:
+            option = input("[M]anual/[D]elete-then-create").upper()
+            if option == "M":
+                logger.info("Ok.")
+                return
+            if option == "D":
+                while (
+                    sure := input(
+                        "Statistics of the post will be deleted. Are you sure? [y/N]"
+                    ).upper()
+                ) not in "YN":
+                    break
+                if sure == "N":
+                    continue
+                while input('Type "Done" after you deleted the old one.') != "Done":
+                    pass
+                logger.info("Ok, creating a new post")
+                return self.make_posted(post)
 
 
 class Devto(BlogApi):
@@ -67,47 +163,55 @@ class Devto(BlogApi):
         if self.apikey is None:
             self.apikey = getpass("devto key:")
 
-    def is_published(self, post_id) -> bool:
-        headers = {"Accept": "application/json", "api-key": self.apikey}
-        url = f"https://dev.to/api/articles/{post_id}"
-        logger.info(f"request.get({url})...")
-        req = requests.get(url, headers=headers)
-        logger.info(f"got status_code={req.status_code}")
-        if req.status_code == 200:
-            return True
-        if req.status_code == 404:
-            return False
-        raise requests.HTTPError(req)
+    @staticmethod
+    def build_payload(post_content: str, post_setting: PostSetting) -> dict:
+        payload = {"article": {"body_markdown": post_content}}
+        if post_setting.title is not None:
+            payload["article"]["title"] = post_setting.title
+        if post_setting.draft is not None:
+            payload["article"]["published"] = not post_setting.draft
+        if post_setting.tags is not None:
+            payload["article"]["tags"] = post_setting.tags
+        if post_setting.main_image is not None:
+            payload["article"]["main_image"] = post_setting.main_image
+        if post_setting.canonical_url is not None:
+            payload["article"]["canonical_url"] = post_setting.canonical_url
+        if post_setting.description is not None:
+            payload["article"]["description"] = post_setting.description
+        if post_setting.devto_series is not None:
+            payload["article"]["series"] = post_setting.devto_series
+        return payload
 
-    def make_posted(self, post: Post) -> int:
-        with open(post, "r", encoding="utf-8") as f:
-            post_str = f.read()
+    def make_posted(self, post: Post) -> str:
+        post_content, post_setting = self.read_post_content_and_setting(post)
         headers = {"Content-Type": "application/json", "api-key": self.apikey}
         url = "https://dev.to/api/articles"
-        payload = {"article": {"body_markdown": post_str}}
+        payload = self.build_payload(post_content, post_setting)
         logger.info(f"request.post({url})")
         req = requests.post(url, headers=headers, data=json.dumps(payload))
         logger.info(f"got status_code={req.status_code}")
         if req.status_code != 201:
             raise requests.HTTPError(req)
-        logger.info(f'got id={req.json()["id"]}')
-        return req.json()["id"]
+        post_id = str(req.json()["id"])
+        logger.info(f"got id={post_id}")
+        return post_id
 
-    def update_post(self, post: Post, post_id) -> None:
-        with open(post, "r", encoding="utf-8") as f:
-            post_str = f.read()
+    def update_post(self, post: Post, post_id) -> Optional[str]:
+        post_content, post_setting = self.read_post_content_and_setting(post)
         headers = {"Content-Type": "application/json", "api-key": self.apikey}
         url = f"https://dev.to/api/articles/{post_id}"
-        payload = {"article": {"body_markdown": post_str}}
+        payload = self.build_payload(post_content, post_setting)
         logger.info(f"request.put({url})")
         req = requests.put(url, headers=headers, data=json.dumps(payload))
         logger.info(f"got status_code={req.status_code}")
         if req.status_code != 200:
             raise requests.HTTPError(req)
+        return post_id
 
 
 API_MAP: dict[Blog, BlogApi] = {
     Blog.devto: Devto(),
+    Blog.medium: Medium(),
 }
 
 
@@ -136,9 +240,9 @@ def get_status(current=True) -> Status:
     return parse_status(d)
 
 
-def get_post_status(post: Post, current=True) -> PostStatus:
+def get_post_status(base: Post, current=True) -> PostStatus:
     status = get_status(current=current)
-    return status.get(post, PostStatus())
+    return status.get(base, PostStatus())
 
 
 def write_status(status: Status):
@@ -146,7 +250,10 @@ def write_status(status: Status):
         s = defaultdict(dict)
         for post, post_status in status.items():
             for blog, blog_status in post_status.items():
-                s[post][blog.name] = blog_status.dict()
+                if isinstance(blog, Blog):
+                    s[post][blog.name] = blog_status.dict()
+                else:
+                    s[post][blog] = blog_status.dict()
         yaml.dump(dict(s), f, default_flow_style=False)
 
 
@@ -157,10 +264,10 @@ def update_post_status(post: Post, post_status: PostStatus):
 
 
 def all_modified_posts() -> Generator[Post, None, None]:
-    yield from (
-        p
+    yield from set(
+        get_post(p)
         for p in repo.git.diff(LAST_COMMIT, CUR_COMMIT, name_only=True).split("\n")
-        if p.startswith("blog-posts/") and p.endswith(".md")
+        if p.startswith("blog-posts/") and (p.endswith(".md") or p.endswith(".json"))
     )
 
 
@@ -177,16 +284,11 @@ def commit_post(post: Post, blog_api: BlogApi):
     blog_status = post_status[blog_api.blog]
     if blog_status.post_id is None:
         logger.info(f"post have no id, make posted...")
-        blog_status.post_id = str(blog_api.make_posted(post))
-        update_post_status(post, post_status)
+        blog_status.post_id = blog_api.make_posted(post)
     else:
         logger.info(f"post have id, update post...")
-        blog_api.update_post(post, blog_status.post_id)
-
-
-def is_published(post_id, blog: Blog) -> bool:
-    blog_api = API_MAP[blog]
-    return blog_api.is_published(post_id)
+        blog_status.post_id = blog_api.update_post(post, blog_status.post_id)
+    update_post_status(post, post_status)
 
 
 def commit_all():
@@ -199,8 +301,10 @@ def commit_all():
             diff == ""
         ), "all tracked files should be commit before running this script"
     for post in all_modified_posts():
-        if not os.path.exists(post):
-            raise FileNotFoundError(post)
+        if not os.path.exists(get_content(post)):
+            raise FileNotFoundError(get_content(post))
+        if not os.path.exists(get_setting(post)):
+            raise FileNotFoundError(get_setting(post))
 
     for post in all_modified_posts():
         for blog_api in API_MAP.values():
