@@ -36,6 +36,7 @@ class BlogStatus(BaseModel):
 
 class PostSetting(BaseModel):
     title: str
+    slug: Optional[str]
     draft: bool
     main_image: Optional[str]
     description: Optional[str]
@@ -75,7 +76,7 @@ class BlogApi(abc.ABC):
         return post_content, post_setting
 
     @abc.abstractmethod
-    def make_posted(self, post: Post) -> str:
+    def make_posted(self, post: Post) -> Optional[str]:
         """Make post posted
 
         :return post id
@@ -209,9 +210,115 @@ class Devto(BlogApi):
         return post_id
 
 
+class Hashnode(BlogApi):
+    blog: Blog = Blog.hashnode
+
+    def __init__(self):
+        self.apikey = os.environ.get("HASHNODE_KEY", None)
+        self.publication_id = "616bdc5d7c361e5132822556"
+        if self.apikey is None:
+            self.apikey = getpass("hashnode key:")
+
+    def make_posted(self, post: Post) -> Optional[str]:
+        post_content, post_setting = self.read_post_content_and_setting(post)
+
+        if post_setting.draft:
+            logger.warning("hashnode do not support draft in api.")
+            logger.warning("Skipped.")
+            return
+
+        headers = {"Content-Type": "application/json", "Authorization": self.apikey}
+        url = "https://api.hashnode.com"
+        logger.info(f"request.post({url})")
+
+        def else_none(a):
+            return None if a is None else a
+
+        query = """
+            mutation createPublicationStory($input: CreateStoryInput! $publicationId: String!){
+                createPublicationStory(input: $input publicationId: $publicationId){
+                    post { _id }
+                }
+            }
+        """
+
+        body = {
+            "query": query,
+            "variables": {
+                "input": {
+                    "title": else_none(post_setting.title),
+                    "slug": else_none(post_setting.slug),
+                    "contentMarkdown": post_content,
+                    "tags": [],  # don't know how to build tag...
+                    "coverImage": else_none(post_setting.main_image),
+                    "isRepublished": None
+                    if post_setting.canonical_url is None
+                    else {"originalArticleURL": post_setting.canonical_url},
+                },
+                "publicationId": self.publication_id,
+            },
+        }
+
+        def drop_none(d):
+            drops = []
+            for k, v in d.items():
+                if v is None:
+                    drops.append(k)
+                if isinstance(v, dict):
+                    drop_none(v)
+            for k in drops:
+                d.pop(k)
+
+        drop_none(body)
+
+        req = requests.post(url, headers=headers, data=json.dumps(body))
+        logger.info(f"got status_code={req.status_code}")
+        if req.status_code != 200:
+            raise requests.HTTPError(req)
+        # req json is like
+        # {'data': {'createPublicationStory': {'post': {'_id': '616beb8d7c361e513282266f'}}}}
+        post_id = str(req.json()["data"]["createPublicationStory"]["post"]["_id"])
+        logger.info(f"got id={post_id}")
+        return post_id
+
+    def update_post(self, post: Post, post_id) -> Optional[str]:
+        post_content, post_setting = self.read_post_content_and_setting(post)
+
+        if post_setting.draft:
+            logger.warning("hashnode do not support draft in api.")
+            logger.warning("Skipped.")
+            return post_id
+
+        logger.warning("Hashnode does not support update post using API.")
+        logger.warning(
+            f"Go to `https://hashnode.com/{self.publication_id}/dashboard/posts` and delete it. "
+            f"This system will create a new one. "
+            f"Or you can edit it in a browser manually."
+        )
+        while True:
+            option = input("[M]anual/[D]elete-then-create").upper()
+            if option == "M":
+                logger.info("Ok.")
+                return
+            if option == "D":
+                while (
+                    sure := input(
+                        "Statistics of the post will be deleted. Are you sure? [y/N]"
+                    ).upper()
+                ) not in "YN":
+                    break
+                if sure == "N":
+                    continue
+                while input('Type "Done" after you deleted the old one.') != "Done":
+                    pass
+                logger.info("Ok, creating a new post")
+                return self.make_posted(post)
+
+
 API_MAP: dict[Blog, BlogApi] = {
     Blog.devto: Devto(),
     Blog.medium: Medium(),
+    Blog.hashnode: Hashnode(),
 }
 
 
