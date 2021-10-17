@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "mlpost"
+version = "0.0.1"
+description = ""
+authors = ["Chou Hung-Yi <hychou.svm@gmail.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+PyYAML = "^6.0"
+pydantic = "^1.8.2"
+GitPython = "^3.1.24"
+loguru = "^0.5.3"
+
+[tool.poetry.dev-dependencies]
+isort = "^5.9.3"
+pre-commit = "^2.15.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
